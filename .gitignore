@@ -1,0 +1,16 @@
+# Java / Maven
+target/
+*.class
+*.log
+
+# C++
+bin/*.o
+bin/EchoClient
+bin/StompWCIClient
+
+# IDE
+.vscode/
+*.iml
+
+# OS
+.DS_Store
