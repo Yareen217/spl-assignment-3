@@ -17,6 +17,7 @@ public class ConnectionsImpl<T> implements Connections<T> {
     private final ConcurrentMap<Integer, ConcurrentMap<Integer, String>> connectionActiveSubscriptions = new ConcurrentHashMap<>();
     
     // Active Users map (for avoiding ghost users)
+
     private final ConcurrentMap<Integer, String> activeUsers = new ConcurrentHashMap<>();
 
     @Override
@@ -44,6 +45,7 @@ public class ConnectionsImpl<T> implements Connections<T> {
         ConnectionHandler<T> handler = handlers.remove(connectionId);
         
         // 1. Clean up subscriptions
+
         Map<Integer, String> subscriptions = connectionActiveSubscriptions.remove(connectionId);
         if (subscriptions != null) {
             for (String channel : subscriptions.values()) {
@@ -54,7 +56,7 @@ public class ConnectionsImpl<T> implements Connections<T> {
             }
         }
         
-        // 2. Clean up login state
+
         activeUsers.remove(connectionId);
 
         // 3. Close socket
@@ -74,7 +76,7 @@ public class ConnectionsImpl<T> implements Connections<T> {
     public void subscribe(int connectionId, String channel, int subscriptionId) {
         channelSubscribers.computeIfAbsent(channel, k -> new ConcurrentHashMap<>())
                           .put(connectionId, subscriptionId);
-        
+
         connectionActiveSubscriptions.computeIfAbsent(connectionId, k -> new ConcurrentHashMap<>())
                                      .put(subscriptionId, channel);
     }
@@ -111,6 +113,7 @@ public class ConnectionsImpl<T> implements Connections<T> {
         if (activeUsers.containsValue(username)) {
             return false;
         }
+
         activeUsers.put(connectionId, username);
         return true;
     }
