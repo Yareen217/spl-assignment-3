@@ -1,5 +1,8 @@
 package bgu.spl.net.srv;
-
+import java.util.concurrent.atomic.AtomicInteger;
+import bgu.spl.net.srv.Connections;
+import bgu.spl.net.impl.stomp.ConnectionsImpl;
+import bgu.spl.net.api.StompMessagingProtocol;
 import bgu.spl.net.api.MessageEncoderDecoder;
 import bgu.spl.net.api.MessagingProtocol;
 import java.io.BufferedInputStream;
@@ -55,6 +58,14 @@ public class BlockingConnectionHandler<T> implements Runnable, ConnectionHandler
 
     @Override
     public void send(T msg) {
-        //IMPLEMENT IF NEEDED
+        if (msg == null) return;
+        try {
+            synchronized (this) {
+                out.write(encdec.encode(msg));
+                out.flush();
+            }
+        } catch (IOException e) {
+            try { close(); } catch (IOException ignored) {}
+        }
     }
 }

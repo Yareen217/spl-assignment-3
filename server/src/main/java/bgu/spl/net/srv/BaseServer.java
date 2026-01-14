@@ -1,4 +1,8 @@
 package bgu.spl.net.srv;
+import java.util.concurrent.atomic.AtomicInteger;
+
+import bgu.spl.net.api.StompMessagingProtocol;
+import bgu.spl.net.impl.stomp.ConnectionsImpl;
 
 import bgu.spl.net.api.MessageEncoderDecoder;
 import bgu.spl.net.api.MessagingProtocol;
@@ -13,6 +17,9 @@ public abstract class BaseServer<T> implements Server<T> {
     private final Supplier<MessagingProtocol<T>> protocolFactory;
     private final Supplier<MessageEncoderDecoder<T>> encdecFactory;
     private ServerSocket sock;
+    private final ConnectionsImpl<T> connections = new ConnectionsImpl<>();
+    private final AtomicInteger idCounter = new AtomicInteger(0);
+
 
     public BaseServer(
             int port,
@@ -37,12 +44,21 @@ public abstract class BaseServer<T> implements Server<T> {
 
                 Socket clientSock = serverSock.accept();
 
-                BlockingConnectionHandler<T> handler = new BlockingConnectionHandler<>(
-                        clientSock,
-                        encdecFactory.get(),
-                        protocolFactory.get());
+                MessagingProtocol<T> protocol = protocolFactory.get();
+                MessageEncoderDecoder<T> encdec = encdecFactory.get();
+
+                BlockingConnectionHandler<T> handler =
+                        new BlockingConnectionHandler<>(clientSock, encdec, protocol);
+
+                int id = idCounter.incrementAndGet();
+                connections.addConnection(id, handler);
+
+                if (protocol instanceof StompMessagingProtocol) {
+                    ((StompMessagingProtocol<T>) protocol).start(id, connections);
+                }
 
                 execute(handler);
+
             }
         } catch (IOException ex) {
         }
