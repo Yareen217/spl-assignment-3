@@ -9,6 +9,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 public class StompProtocolImpl implements StompMessagingProtocol<String> {
 
+
     private static final AtomicInteger messageIdCounter = new AtomicInteger(0);
 
     private int connectionId;
@@ -29,13 +30,15 @@ public class StompProtocolImpl implements StompMessagingProtocol<String> {
         this.connectionId = connectionId;
         this.connections = connections;
     }
-
+    
+    // ... (process() remains exactly the same) ...
     @Override
     public String process(String message) {
         if (message == null || message.isEmpty()) return null;
 
         StompFrame frame = StompFrame.parse(message);
         String cmd = frame.command;
+
 
         if (username == null && !cmd.equals("CONNECT")) {
             sendError(frame, "User not logged in");
@@ -53,7 +56,7 @@ public class StompProtocolImpl implements StompMessagingProtocol<String> {
         }
         return null;
     }
-
+    
     @Override
     public boolean shouldTerminate() { return shouldTerminate; }
 

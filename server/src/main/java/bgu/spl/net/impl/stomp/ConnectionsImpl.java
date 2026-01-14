@@ -17,7 +17,6 @@ public class ConnectionsImpl<T> implements Connections<T> {
     private final ConcurrentHashMap<String, CopyOnWriteArrayList<Integer>> channelSubscribers = new ConcurrentHashMap<>();
 
     // Mapping: ConnectionID -> (SubscriptionID -> Channel Name)
-    // This helper map allows us to easily remove all subscriptions for a specific user on disconnect.
     private final ConcurrentHashMap<Integer, ConcurrentHashMap<Integer, String>> clientSubscriptions = new ConcurrentHashMap<>();
 
     // Mapping: Username -> ConnectionID (To check "User already logged in")
@@ -49,11 +48,10 @@ public class ConnectionsImpl<T> implements Connections<T> {
         // 1. Remove from active connections
         activeConnections.remove(connectionId);
 
-        // 2. Remove from loggedInUsers (CRITICAL for Milestone 4)
-        // We have to iterate because the map is Username -> ID
+        // 2. Remove from loggedInUsers
         loggedInUsers.values().removeIf(id -> id == connectionId);
 
-        // 3. Remove all subscriptions for this connection (CRITICAL for Milestone 4)
+        // 3. Remove all subscriptions for this connection
         Map<Integer, String> userSubs = clientSubscriptions.remove(connectionId);
         if (userSubs != null) {
             for (String channel : userSubs.values()) {
@@ -73,7 +71,6 @@ public class ConnectionsImpl<T> implements Connections<T> {
     }
 
     public boolean tryLogin(int connectionId, String username) {
-        // Atomic check: if key absent, put value. Returns null if success (key was absent).
         return loggedInUsers.putIfAbsent(username, connectionId) == null;
     }
     
@@ -81,7 +78,6 @@ public class ConnectionsImpl<T> implements Connections<T> {
         channelSubscribers.putIfAbsent(channel, new CopyOnWriteArrayList<>());
         channelSubscribers.get(channel).add(connectionId);
 
-        // Track per client for easy removal later
         if (clientSubscriptions.containsKey(connectionId)) {
             clientSubscriptions.get(connectionId).put(subscriptionId, channel);
         }
@@ -102,14 +98,11 @@ public class ConnectionsImpl<T> implements Connections<T> {
     }
 
     public Map<Integer, Integer> getChannelSubscribers(String channel) {
-        // Needed for sending messages with specific Subscription IDs
-        // Returns Map: ConnectionID -> SubscriptionID
         Map<Integer, Integer> result = new java.util.HashMap<>();
         
         List<Integer> subscribers = channelSubscribers.get(channel);
         if (subscribers != null) {
             for (Integer connId : subscribers) {
-                // Find the sub ID for this channel for this user
                 Map<Integer, String> userSubs = clientSubscriptions.get(connId);
                 if (userSubs != null) {
                     for (Map.Entry<Integer, String> entry : userSubs.entrySet()) {
