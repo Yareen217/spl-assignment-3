@@ -21,11 +21,9 @@ public class SqlClient {
              PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
              BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()))) {
 
-            // FIX: Append a null character (\u0000) so the Python server knows to stop reading.
             out.print(sqlCommand + "\u0000");
             out.flush();
 
-            // Python sends response ended with \n. readLine() reads it correctly.
             return in.readLine();
 
         } catch (IOException e) {

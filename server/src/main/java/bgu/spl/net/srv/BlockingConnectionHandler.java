@@ -3,7 +3,6 @@ package bgu.spl.net.srv;
 import bgu.spl.net.api.MessageEncoderDecoder;
 import bgu.spl.net.api.MessagingProtocol;
 import bgu.spl.net.api.StompMessagingProtocol;
-// IMPORT THIS:
 import bgu.spl.net.impl.stomp.StompProtocolImpl; 
 
 import java.io.BufferedInputStream;
@@ -13,7 +12,6 @@ import java.net.Socket;
 
 public class BlockingConnectionHandler<T> implements Runnable, ConnectionHandler<T> {
 
-    // ... (fields and constructor remain the same) ...
     private final MessagingProtocol<T> protocol;
     private final MessageEncoderDecoder<T> encdec;
     private final Socket sock;
@@ -57,13 +55,9 @@ public class BlockingConnectionHandler<T> implements Runnable, ConnectionHandler
         } catch (IOException ex) {
             ex.printStackTrace();
         } finally {
-            // --- FIX: DB CLEANUP ON SOCKET CLOSE ---
-            // If the protocol is StompProtocolImpl, we tell it to "disconnectNow()"
-            // which runs the SQL UPDATE command.
             if (protocol instanceof StompProtocolImpl) {
                  ((StompProtocolImpl) protocol).disconnectNow();
             } else {
-                // Fallback for non-stomp protocols (just memory cleanup)
                 if (connections != null) {
                     connections.disconnect(connectionId);
                 }

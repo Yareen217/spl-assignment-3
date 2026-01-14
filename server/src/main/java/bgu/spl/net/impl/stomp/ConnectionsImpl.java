@@ -1,27 +1,31 @@
 package bgu.spl.net.impl.stomp;
 
-import bgu.spl.net.srv.Connections;
 import bgu.spl.net.srv.ConnectionHandler;
-
-import java.util.Map;
+import bgu.spl.net.srv.Connections;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.Map;
+import java.util.List;
+import java.io.IOException;
 
 public class ConnectionsImpl<T> implements Connections<T> {
 
-    // Handlers map
-    private final ConcurrentMap<Integer, ConnectionHandler<T>> handlers = new ConcurrentHashMap<>();
+    // Mapping: ConnectionID -> ConnectionHandler
+    private final ConcurrentHashMap<Integer, ConnectionHandler<T>> activeConnections = new ConcurrentHashMap<>();
     
-    // Subscription maps
-    private final ConcurrentMap<String, ConcurrentMap<Integer, Integer>> channelSubscribers = new ConcurrentHashMap<>();
-    private final ConcurrentMap<Integer, ConcurrentMap<Integer, String>> connectionActiveSubscriptions = new ConcurrentHashMap<>();
-    
-    // Active Users map (for avoiding ghost users)
-    private final ConcurrentMap<Integer, String> activeUsers = new ConcurrentHashMap<>();
+    // Mapping: Channel Name -> List of Subscriber ConnectionIDs
+    private final ConcurrentHashMap<String, CopyOnWriteArrayList<Integer>> channelSubscribers = new ConcurrentHashMap<>();
+
+    // Mapping: ConnectionID -> (SubscriptionID -> Channel Name)
+    // This helper map allows us to easily remove all subscriptions for a specific user on disconnect.
+    private final ConcurrentHashMap<Integer, ConcurrentHashMap<Integer, String>> clientSubscriptions = new ConcurrentHashMap<>();
+
+    // Mapping: Username -> ConnectionID (To check "User already logged in")
+    private final ConcurrentHashMap<String, Integer> loggedInUsers = new ConcurrentHashMap<>();
 
     @Override
     public boolean send(int connectionId, T msg) {
-        ConnectionHandler<T> handler = handlers.get(connectionId);
+        ConnectionHandler<T> handler = activeConnections.get(connectionId);
         if (handler != null) {
             handler.send(msg);
             return true;
@@ -31,87 +35,92 @@ public class ConnectionsImpl<T> implements Connections<T> {
 
     @Override
     public void send(String channel, T msg) {
-        ConcurrentMap<Integer, Integer> subscribers = channelSubscribers.get(channel);
+        // Broadcast to all subscribers of this channel
+        List<Integer> subscribers = channelSubscribers.get(channel);
         if (subscribers != null) {
-            for (Integer connectionId : subscribers.keySet()) {
-                send(connectionId, msg); 
+            for (Integer connId : subscribers) {
+                send(connId, msg);
             }
         }
     }
 
     @Override
     public void disconnect(int connectionId) {
-        ConnectionHandler<T> handler = handlers.remove(connectionId);
-        
-        // 1. Clean up subscriptions
-        Map<Integer, String> subscriptions = connectionActiveSubscriptions.remove(connectionId);
-        if (subscriptions != null) {
-            for (String channel : subscriptions.values()) {
-                ConcurrentMap<Integer, Integer> subscribers = channelSubscribers.get(channel);
+        // 1. Remove from active connections
+        activeConnections.remove(connectionId);
+
+        // 2. Remove from loggedInUsers (CRITICAL for Milestone 4)
+        // We have to iterate because the map is Username -> ID
+        loggedInUsers.values().removeIf(id -> id == connectionId);
+
+        // 3. Remove all subscriptions for this connection (CRITICAL for Milestone 4)
+        Map<Integer, String> userSubs = clientSubscriptions.remove(connectionId);
+        if (userSubs != null) {
+            for (String channel : userSubs.values()) {
+                List<Integer> subscribers = channelSubscribers.get(channel);
                 if (subscribers != null) {
-                    subscribers.remove(connectionId);
+                    subscribers.remove((Integer) connectionId);
                 }
             }
         }
-        
-        // 2. Clean up login state
-        activeUsers.remove(connectionId);
+    }
 
-        // 3. Close socket
-        if (handler != null) {
-            try {
-                handler.close();
-            } catch (Exception ignored) {}
+    // --- Helper Methods for StompProtocolImpl ---
+
+    public void addConnection(int connectionId, ConnectionHandler<T> handler) {
+        activeConnections.put(connectionId, handler);
+        clientSubscriptions.put(connectionId, new ConcurrentHashMap<>());
+    }
+
+    public boolean tryLogin(int connectionId, String username) {
+        // Atomic check: if key absent, put value. Returns null if success (key was absent).
+        return loggedInUsers.putIfAbsent(username, connectionId) == null;
+    }
+    
+    public void subscribe(int connectionId, String channel, int subscriptionId) {
+        channelSubscribers.putIfAbsent(channel, new CopyOnWriteArrayList<>());
+        channelSubscribers.get(channel).add(connectionId);
+
+        // Track per client for easy removal later
+        if (clientSubscriptions.containsKey(connectionId)) {
+            clientSubscriptions.get(connectionId).put(subscriptionId, channel);
         }
     }
 
-    public void addConnection(int connectionId, ConnectionHandler<T> handler) {
-        handlers.put(connectionId, handler);
-    }
-
-    // --- Helper Methods needed by StompProtocolImpl ---
-
-    public void subscribe(int connectionId, String channel, int subscriptionId) {
-        channelSubscribers.computeIfAbsent(channel, k -> new ConcurrentHashMap<>())
-                          .put(connectionId, subscriptionId);
-        
-        connectionActiveSubscriptions.computeIfAbsent(connectionId, k -> new ConcurrentHashMap<>())
-                                     .put(subscriptionId, channel);
-    }
-
     public void unsubscribe(int connectionId, int subscriptionId) {
-        Map<Integer, String> clientSubs = connectionActiveSubscriptions.get(connectionId);
-        if (clientSubs != null) {
-            String channel = clientSubs.remove(subscriptionId);
-            if (channel != null) {
-                ConcurrentMap<Integer, Integer> subscribers = channelSubscribers.get(channel);
-                if (subscribers != null) {
-                    subscribers.remove(connectionId);
-                }
+        if (clientSubscriptions.containsKey(connectionId)) {
+            String channel = clientSubscriptions.get(connectionId).remove(subscriptionId);
+            if (channel != null && channelSubscribers.containsKey(channel)) {
+                channelSubscribers.get(channel).remove((Integer) connectionId);
             }
         }
     }
 
     public boolean hasSubscription(int connectionId, String channel) {
-        Map<Integer, String> subs = connectionActiveSubscriptions.get(connectionId);
-        return subs != null && subs.containsValue(channel);
+        if (!clientSubscriptions.containsKey(connectionId)) return false;
+        return clientSubscriptions.get(connectionId).containsValue(channel);
     }
 
     public Map<Integer, Integer> getChannelSubscribers(String channel) {
-        ConcurrentMap<Integer, Integer> subs = channelSubscribers.get(channel);
-        if (subs == null) return new java.util.HashMap<>();
-        return subs;
-    }
-
-    /**
-     * Try to log in a user.
-     * @return true if successful, false if user is already logged in elsewhere.
-     */
-    public boolean tryLogin(int connectionId, String username) {
-        if (activeUsers.containsValue(username)) {
-            return false;
+        // Needed for sending messages with specific Subscription IDs
+        // Returns Map: ConnectionID -> SubscriptionID
+        Map<Integer, Integer> result = new java.util.HashMap<>();
+        
+        List<Integer> subscribers = channelSubscribers.get(channel);
+        if (subscribers != null) {
+            for (Integer connId : subscribers) {
+                // Find the sub ID for this channel for this user
+                Map<Integer, String> userSubs = clientSubscriptions.get(connId);
+                if (userSubs != null) {
+                    for (Map.Entry<Integer, String> entry : userSubs.entrySet()) {
+                        if (entry.getValue().equals(channel)) {
+                            result.put(connId, entry.getKey());
+                            break; 
+                        }
+                    }
+                }
+            }
         }
-        activeUsers.put(connectionId, username);
-        return true;
+        return result;
     }
 }

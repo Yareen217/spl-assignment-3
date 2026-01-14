@@ -15,11 +15,9 @@ public class StompProtocolImpl implements StompMessagingProtocol<String> {
     private Connections<String> connections;
     private boolean shouldTerminate = false;
     
-    // Client state
     private String username = null;
-    private int dbLoginId = -1; // To track the row in login_history table
+    private int dbLoginId = -1; 
 
-    // SQL Client
     private final SqlClient sqlClient;
 
     public StompProtocolImpl(SqlClient sqlClient) {
@@ -70,23 +68,17 @@ public class StompProtocolImpl implements StompMessagingProtocol<String> {
             disconnectNow(); return;
         }
 
-        // 1. Check if user is already active (InMemory Check)
         boolean success = ((ConnectionsImpl<String>) connections).tryLogin(connectionId, login);
         if (!success) {
             sendError(frame, "User already logged in");
             disconnectNow(); return;
         }
 
-        // 2. Database Authentication
-        // Query password for this user
         String resp = sqlClient.execute("SELECT password FROM users WHERE username='" + login + "'");
         
         if (resp == null || resp.trim().isEmpty()) {
-            // Case A: New User -> Register 
             sqlClient.execute("INSERT INTO users (username, password) VALUES ('" + login + "', '" + passcode + "')");
-            // Auto-login continues below
         } else {
-            // Case B: Existing User -> Check Password
             String dbPass = resp.trim(); 
             if (!dbPass.equals(passcode)) {
                 sendError(frame, "Wrong password");
@@ -94,7 +86,6 @@ public class StompProtocolImpl implements StompMessagingProtocol<String> {
             }
         }
 
-        // 3. Log the login event 
         String idResp = sqlClient.execute("INSERT INTO login_history (username) VALUES ('" + login + "')");
         try {
             this.dbLoginId = Integer.parseInt(idResp.trim());
@@ -121,12 +112,18 @@ public class StompProtocolImpl implements StompMessagingProtocol<String> {
 
         String messageBody = frame.body;
 
-        // --- NEW: Parse Body for Reports ---
-        // We look for "file: <filename>" inside the message body.
+        // --- IMPROVED: Parse Body AND Headers for Reports ---
+        
+        // 1. Try to find "file: <name>" in the message BODY (Standard way)
         String filename = getValueFromBody(messageBody, "file");
         
+        // 2. Fallback: If not in body, check the HEADERS (Test script way)
+        if (filename == null) {
+            filename = frame.headers.get("file");
+        }
+        
+        // If we found it in either place, save the report!
         if (filename != null) {
-            // It is a report! Save it.
             String timestamp = Long.toString(System.currentTimeMillis());
             
             if (this.username != null) {
@@ -162,12 +159,10 @@ public class StompProtocolImpl implements StompMessagingProtocol<String> {
                 }
             }
         }
-        return null; // Key not found
+        return null; 
     }
 
-    // Public disconnect method for BlockingConnectionHandler to call
     public void disconnectNow() {
-        // Update logout timestamp using the ID we saved at login
         if (dbLoginId != -1) {
             sqlClient.execute("UPDATE login_history SET logout_time=CURRENT_TIMESTAMP WHERE id=" + dbLoginId);
             dbLoginId = -1;
