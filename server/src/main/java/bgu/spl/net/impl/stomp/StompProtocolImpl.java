@@ -6,11 +6,13 @@ import bgu.spl.net.srv.Connections;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class StompProtocolImpl implements StompMessagingProtocol<String> {
 
     private static final ConcurrentHashMap<String, String> userToPass = new ConcurrentHashMap<>();
-    private static final ConcurrentHashMap<String, Boolean> loggedIn = new ConcurrentHashMap<>();
+    // [REMOVED] private static final ConcurrentHashMap<String, Boolean> loggedIn = ...
+    private static final AtomicInteger messageIdCounter = new AtomicInteger(0);
 
     private int connectionId;
     private Connections<String> connections;
@@ -22,41 +24,35 @@ public class StompProtocolImpl implements StompMessagingProtocol<String> {
         this.connectionId = connectionId;
         this.connections = connections;
     }
-
+    
+    // ... (process() remains exactly the same) ...
     @Override
     public String process(String message) {
         if (message == null || message.isEmpty()) return null;
 
         StompFrame frame = StompFrame.parse(message);
         String cmd = frame.command;
-        
+
+        // Force login first (except for CONNECT command)
         if (username == null && !cmd.equals("CONNECT")) {
-            sendError(frame, "Must CONNECT first");
+            sendError(frame, "User not logged in");
             disconnectNow();
             return null;
         }
-
-
+        // ... switch case logic ...
         switch (cmd) {
-            case "CONNECT":
-                handleConnect(frame);
-                break;
-
-            case "DISCONNECT":
-                handleDisconnect(frame);
-                break;
-
-            default:
-                sendError(frame, "Unsupported command: " + cmd);
-                disconnectNow();
+            case "CONNECT": handleConnect(frame); break;
+            case "DISCONNECT": handleDisconnect(frame); break;
+            case "SUBSCRIBE": handleSubscribe(frame); break;
+            case "UNSUBSCRIBE": handleUnsubscribe(frame); break;
+            case "SEND": handleSend(frame); break;
+            default: sendError(frame, "Unsupported command"); disconnectNow();
         }
         return null;
     }
-
+    
     @Override
-    public boolean shouldTerminate() {
-        return shouldTerminate;
-    }
+    public boolean shouldTerminate() { return shouldTerminate; }
 
     private void handleConnect(StompFrame frame) {
         String login = frame.headers.get("login");
@@ -64,98 +60,98 @@ public class StompProtocolImpl implements StompMessagingProtocol<String> {
 
         if (login == null || passcode == null) {
             sendError(frame, "Missing login/passcode");
-            disconnectNow();
-            return;
+            disconnectNow(); return;
         }
 
         userToPass.putIfAbsent(login, passcode);
 
         if (!userToPass.get(login).equals(passcode)) {
             sendError(frame, "Wrong password");
-            disconnectNow();
-            return;
+            disconnectNow(); return;
         }
 
-        if (Boolean.TRUE.equals(loggedIn.get(login))) {
+        // NEW: Delegate "Is logged in?" check to ConnectionsImpl
+        boolean success = ((ConnectionsImpl<String>) connections).tryLogin(connectionId, login);
+        if (!success) {
             sendError(frame, "User already logged in");
-            disconnectNow();
-            return;
+            disconnectNow(); return;
         }
 
-        loggedIn.put(login, true);
-        this.username = login;
+        this.username = login; // Local tracker
 
-        String connected =
-                "CONNECTED\n" +
-                "version:1.2\n" +
-                "\n";
-
+        String connected = "CONNECTED\nversion:1.2\n\n\u0000";
         connections.send(connectionId, connected);
     }
 
     private void handleDisconnect(StompFrame frame) {
-        String receipt = frame.headers.get("receipt");
-        if (receipt != null) {
-            String receiptFrame =
-                    "RECEIPT\n" +
-                    "receipt-id:" + receipt + "\n" +
-                    "\n";
-            connections.send(connectionId, receiptFrame);
-        }
-
-        if (username != null) {
-            loggedIn.put(username, false);
-            username = null;
-        }
-
+        sendReceiptIfNeeded(frame);
+        // Note: We don't need to manually remove from 'loggedIn' map anymore.
+        // connections.disconnect() will handle it.
         disconnectNow();
     }
+    
+    // ... (rest of methods: handleSubscribe, handleSend, etc. remain the same) ...
+    private void handleSubscribe(StompFrame frame) {
+        String destination = frame.headers.get("destination");
+        String idStr = frame.headers.get("id");
+        if (destination == null || idStr == null) { disconnectNow(); return; }
+        ((ConnectionsImpl<String>) connections).subscribe(connectionId, destination, Integer.parseInt(idStr));
+        sendReceiptIfNeeded(frame);
+    }
+    
+    private void handleUnsubscribe(StompFrame frame) {
+         String idStr = frame.headers.get("id");
+         if (idStr == null) { disconnectNow(); return; }
+         ((ConnectionsImpl<String>) connections).unsubscribe(connectionId, Integer.parseInt(idStr));
+         sendReceiptIfNeeded(frame);
+    }
+    
+    private void handleSend(StompFrame frame) {
+        String destination = frame.headers.get("destination");
+        ConnectionsImpl<String> connImpl = (ConnectionsImpl<String>) connections;
+        if (!connImpl.hasSubscription(connectionId, destination)) {
+            sendError(frame, "Not subscribed"); disconnectNow(); return;
+        }
+        String messageBody = frame.body;
+        int msgId = messageIdCounter.incrementAndGet();
+        for (Map.Entry<Integer, Integer> subscriber : connImpl.getChannelSubscribers(destination).entrySet()) {
+            connections.send(subscriber.getKey(), 
+                "MESSAGE\nsubscription:" + subscriber.getValue() + "\nmessage-id:" + msgId + "\ndestination:" + destination + "\n\n" + messageBody + "\u0000");
+        }
+        sendReceiptIfNeeded(frame);
+    }
 
-    private void sendError(StompFrame relatedFrame, String shortMessage) {
-        String receipt = relatedFrame.headers.get("receipt");
+    private void sendReceiptIfNeeded(StompFrame frame) {
+        String r = frame.headers.get("receipt");
+        if (r != null) connections.send(connectionId, "RECEIPT\nreceipt-id:" + r + "\n\n\u0000");
+    }
 
-        StringBuilder sb = new StringBuilder();
-        sb.append("ERROR\n");
-        if (receipt != null) sb.append("receipt-id:").append(receipt).append("\n");
-        sb.append("message:").append(shortMessage).append("\n");
-        sb.append("\n");
-
-        connections.send(connectionId, sb.toString());
+    private void sendError(StompFrame f, String msg) {
+        String r = f.headers.get("receipt");
+        String out = "ERROR\n" + (r!=null ? "receipt-id:"+r+"\n":"") + "message:"+msg+"\n\n\u0000";
+        connections.send(connectionId, out);
     }
 
     private void disconnectNow() {
         shouldTerminate = true;
         connections.disconnect(connectionId);
     }
-
+    
+    // ... Inner StompFrame class ...
     private static class StompFrame {
-        final String command;
-        final Map<String, String> headers;
-        final String body;
-
-        private StompFrame(String command, Map<String, String> headers, String body) {
-            this.command = command;
-            this.headers = headers;
-            this.body = body;
+        final String command; final Map<String, String> headers; final String body;
+        static StompFrame parse(String raw) { /* same as before */ 
+             // ... implementation ...
+             if (raw.endsWith("\u0000")) raw = raw.substring(0, raw.length() - 1);
+             String[] parts = raw.split("\n\n", 2);
+             String[] lines = parts[0].split("\n");
+             Map<String,String> h = new HashMap<>();
+             for(int i=1; i<lines.length; i++) {
+                 int idx = lines[i].indexOf(':');
+                 if(idx>0) h.put(lines[i].substring(0, idx).trim(), lines[i].substring(idx+1).trim());
+             }
+             return new StompFrame(lines[0].trim(), h, parts.length>1?parts[1]:"");
         }
-
-        static StompFrame parse(String raw) {
-            String[] parts = raw.split("\n\n", 2);
-            String head = parts[0];
-            String body = (parts.length == 2) ? parts[1] : "";
-
-            String[] lines = head.split("\n");
-            String cmd = lines[0].trim();
-
-            Map<String, String> headers = new HashMap<>();
-            for (int i = 1; i < lines.length; i++) {
-                String line = lines[i];
-                int idx = line.indexOf(':');
-                if (idx > 0) {
-                    headers.put(line.substring(0, idx).trim(), line.substring(idx + 1).trim());
-                }
-            }
-            return new StompFrame(cmd, headers, body);
-        }
+        private StompFrame(String c, Map<String,String> h, String b) { command=c; headers=h; body=b; }
     }
 }
