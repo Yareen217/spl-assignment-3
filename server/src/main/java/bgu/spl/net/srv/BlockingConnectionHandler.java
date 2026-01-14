@@ -1,10 +1,11 @@
 package bgu.spl.net.srv;
-import java.util.concurrent.atomic.AtomicInteger;
-import bgu.spl.net.srv.Connections;
-import bgu.spl.net.impl.stomp.ConnectionsImpl;
-import bgu.spl.net.api.StompMessagingProtocol;
+
 import bgu.spl.net.api.MessageEncoderDecoder;
 import bgu.spl.net.api.MessagingProtocol;
+import bgu.spl.net.api.StompMessagingProtocol;
+// IMPORT THIS:
+import bgu.spl.net.impl.stomp.StompProtocolImpl; 
+
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
 import java.io.IOException;
@@ -12,26 +13,35 @@ import java.net.Socket;
 
 public class BlockingConnectionHandler<T> implements Runnable, ConnectionHandler<T> {
 
+    // ... (fields and constructor remain the same) ...
     private final MessagingProtocol<T> protocol;
     private final MessageEncoderDecoder<T> encdec;
     private final Socket sock;
     private BufferedInputStream in;
     private BufferedOutputStream out;
     private volatile boolean connected = true;
+    private final Connections<T> connections;
+    private final int connectionId;
 
-    public BlockingConnectionHandler(Socket sock, MessageEncoderDecoder<T> reader, MessagingProtocol<T> protocol) {
+    public BlockingConnectionHandler(Socket sock, MessageEncoderDecoder<T> reader, MessagingProtocol<T> protocol, Connections<T> connections, int connectionId) {
         this.sock = sock;
         this.encdec = reader;
         this.protocol = protocol;
+        this.connections = connections;
+        this.connectionId = connectionId;
     }
 
     @Override
     public void run() {
-        try (Socket sock = this.sock) { //just for automatic closing
+        try (Socket sock = this.sock) { 
             int read;
 
             in = new BufferedInputStream(sock.getInputStream());
             out = new BufferedOutputStream(sock.getOutputStream());
+
+            if (protocol instanceof StompMessagingProtocol) {
+                ((StompMessagingProtocol<T>) protocol).start(connectionId, connections);
+            }
 
             while (!protocol.shouldTerminate() && connected && (read = in.read()) >= 0) {
                 T nextMessage = encdec.decodeNextByte((byte) read);
@@ -46,8 +56,25 @@ public class BlockingConnectionHandler<T> implements Runnable, ConnectionHandler
 
         } catch (IOException ex) {
             ex.printStackTrace();
+        } finally {
+            // --- FIX: DB CLEANUP ON SOCKET CLOSE ---
+            // If the protocol is StompProtocolImpl, we tell it to "disconnectNow()"
+            // which runs the SQL UPDATE command.
+            if (protocol instanceof StompProtocolImpl) {
+                 ((StompProtocolImpl) protocol).disconnectNow();
+            } else {
+                // Fallback for non-stomp protocols (just memory cleanup)
+                if (connections != null) {
+                    connections.disconnect(connectionId);
+                }
+            }
+            
+            try {
+                close();
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
         }
-
     }
 
     @Override
@@ -58,14 +85,13 @@ public class BlockingConnectionHandler<T> implements Runnable, ConnectionHandler
 
     @Override
     public void send(T msg) {
-        if (msg == null) return;
         try {
-            synchronized (this) {
+            if (msg != null) {
                 out.write(encdec.encode(msg));
                 out.flush();
             }
         } catch (IOException e) {
-            try { close(); } catch (IOException ignored) {}
+            connected = false; 
         }
     }
 }
