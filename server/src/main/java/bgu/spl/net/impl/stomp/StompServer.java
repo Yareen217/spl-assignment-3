@@ -14,10 +14,8 @@ public class StompServer {
         int port = Integer.parseInt(args[0]);
         String mode = args[1];
 
-        // 1. Initialize the SQL Client
         SqlClient sqlClient = new SqlClient("127.0.0.1", 7778);
 
-        // 2. Start Admin Console Thread (The "report" command)
         new Thread(() -> {
             Scanner scanner = new Scanner(System.in);
             System.out.println("Admin console active. Type 'report' to see database stats.");
@@ -32,12 +30,10 @@ public class StompServer {
                     System.out.println(users.isEmpty() ? "(No users)" : users);
                     
                     System.out.println("\n--- LOGIN HISTORY ---");
-                    // Assuming columns: id, username, login_time, logout_time
                     String logins = sqlClient.execute("SELECT * FROM login_history"); 
                     System.out.println(logins.isEmpty() ? "(No login history)" : logins);
 
                     System.out.println("\n--- GAME REPORTS ---");
-                    // Assuming columns: id, username, filename, channel, timestamp
                     String reports = sqlClient.execute("SELECT * FROM reports");
                     System.out.println(reports.isEmpty() ? "(No reports)" : reports);
                     
@@ -48,7 +44,6 @@ public class StompServer {
             }
         }).start();
 
-        // 3. Start the Server (This blocks the main thread)
         if ("tpc".equalsIgnoreCase(mode)) {
             Server.threadPerClient(
                     port,

@@ -16,7 +16,6 @@ public abstract class BaseServer<T> implements Server<T> {
     private final Supplier<MessageEncoderDecoder<T>> encdecFactory;
     private ServerSocket sock;
     
-    // NEW: Fields to manage connections and IDs
     private final ConnectionsImpl<T> connections = new ConnectionsImpl<>();
     private final AtomicInteger connectionIdCounter = new AtomicInteger(0);
 
@@ -37,34 +36,29 @@ public abstract class BaseServer<T> implements Server<T> {
         try (ServerSocket serverSock = new ServerSocket(port)) {
 			System.out.println("Server started");
 
-            this.sock = serverSock; // just to be able to close
+            this.sock = serverSock; 
 
             while (!Thread.currentThread().isInterrupted()) {
 
                 Socket clientSock = serverSock.accept();
 
-                // 1. Generate ID
                 int connectionId = connectionIdCounter.incrementAndGet();
                 
-                // 2. Create Protocol
                 MessagingProtocol<T> protocol = protocolFactory.get();
                 
-                // 3. Create Handler with NEW arguments (connections + id)
                 BlockingConnectionHandler<T> handler = new BlockingConnectionHandler<>(
                         clientSock,
                         encdecFactory.get(),
                         protocol,
-                        connections,      // <--- Passed here
-                        connectionId      // <--- Passed here
+                        connections,      
+                        connectionId      
                 );
                 
-                // 4. Register in connections map
                 connections.addConnection(connectionId, handler);
 
                 execute(handler);
             }
-        } catch (IOException ex) {
-        }
+            } catch (IOException ex) {}
 
         System.out.println("server closed");
     }
