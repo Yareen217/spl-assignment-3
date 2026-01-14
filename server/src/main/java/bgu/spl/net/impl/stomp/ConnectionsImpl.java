@@ -9,11 +9,15 @@ import java.util.concurrent.ConcurrentMap;
 
 public class ConnectionsImpl<T> implements Connections<T> {
 
+    // Handlers map
     private final ConcurrentMap<Integer, ConnectionHandler<T>> handlers = new ConcurrentHashMap<>();
+    
+    // Subscription maps
     private final ConcurrentMap<String, ConcurrentMap<Integer, Integer>> channelSubscribers = new ConcurrentHashMap<>();
     private final ConcurrentMap<Integer, ConcurrentMap<Integer, String>> connectionActiveSubscriptions = new ConcurrentHashMap<>();
     
-    // NEW: Map to track which user is connected on which connection ID
+    // Active Users map (for avoiding ghost users)
+
     private final ConcurrentMap<Integer, String> activeUsers = new ConcurrentHashMap<>();
 
     @Override
@@ -40,7 +44,8 @@ public class ConnectionsImpl<T> implements Connections<T> {
     public void disconnect(int connectionId) {
         ConnectionHandler<T> handler = handlers.remove(connectionId);
         
-        // 1. Clean up subscriptions (existing logic)
+        // 1. Clean up subscriptions
+
         Map<Integer, String> subscriptions = connectionActiveSubscriptions.remove(connectionId);
         if (subscriptions != null) {
             for (String channel : subscriptions.values()) {
@@ -51,7 +56,7 @@ public class ConnectionsImpl<T> implements Connections<T> {
             }
         }
         
-        // 2. NEW: Clean up the user login state
+
         activeUsers.remove(connectionId);
 
         // 3. Close socket
@@ -66,10 +71,12 @@ public class ConnectionsImpl<T> implements Connections<T> {
         handlers.put(connectionId, handler);
     }
 
-    // ... (Your existing subscribe/unsubscribe/hasSubscription helpers remain here) ...
+    // --- Helper Methods needed by StompProtocolImpl ---
+
     public void subscribe(int connectionId, String channel, int subscriptionId) {
         channelSubscribers.computeIfAbsent(channel, k -> new ConcurrentHashMap<>())
                           .put(connectionId, subscriptionId);
+
         connectionActiveSubscriptions.computeIfAbsent(connectionId, k -> new ConcurrentHashMap<>())
                                      .put(subscriptionId, channel);
     }
@@ -98,19 +105,15 @@ public class ConnectionsImpl<T> implements Connections<T> {
         return subs;
     }
 
-    /** * NEW: Try to log in a user.
+    /**
+     * Try to log in a user.
      * @return true if successful, false if user is already logged in elsewhere.
      */
     public boolean tryLogin(int connectionId, String username) {
-        // Check if username is already in values
         if (activeUsers.containsValue(username)) {
             return false;
         }
-        // Atomic check might be better, but standard containsValue is usually sufficient for this assignment level.
-        // For stricter concurrency:
-        for (String user : activeUsers.values()) {
-            if (user.equals(username)) return false;
-        }
+
         activeUsers.put(connectionId, username);
         return true;
     }
