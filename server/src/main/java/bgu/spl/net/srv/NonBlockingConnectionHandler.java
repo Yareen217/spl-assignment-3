@@ -2,6 +2,8 @@ package bgu.spl.net.srv;
 
 import bgu.spl.net.api.MessageEncoderDecoder;
 import bgu.spl.net.api.MessagingProtocol;
+import bgu.spl.net.api.StompMessagingProtocol;
+import bgu.spl.net.impl.stomp.StompProtocolImpl;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -20,16 +22,29 @@ public class NonBlockingConnectionHandler<T> implements ConnectionHandler<T> {
     private final Queue<ByteBuffer> writeQueue = new ConcurrentLinkedQueue<>();
     private final SocketChannel chan;
     private final Reactor reactor;
+    
+    // NEW: We need these to initialize the protocol
+    private final Connections<T> connections;
+    private final int connectionId;
 
     public NonBlockingConnectionHandler(
             MessageEncoderDecoder<T> reader,
             MessagingProtocol<T> protocol,
             SocketChannel chan,
-            Reactor reactor) {
+            Reactor reactor,
+            Connections<T> connections, // Added
+            int connectionId) {         // Added
         this.chan = chan;
         this.encdec = reader;
         this.protocol = protocol;
         this.reactor = reactor;
+        this.connections = connections;
+        this.connectionId = connectionId;
+
+        // CRITICAL FIX FOR MILESTONE 5:
+        if (protocol instanceof StompMessagingProtocol) {
+            ((StompMessagingProtocol<T>) protocol).start(connectionId, connections);
+        }
     }
 
     public Runnable continueRead() {
@@ -70,6 +85,12 @@ public class NonBlockingConnectionHandler<T> implements ConnectionHandler<T> {
 
     public void close() {
         try {
+            // CRITICAL: Clean up DB if unexpected close
+            if (protocol instanceof StompProtocolImpl) {
+                ((StompProtocolImpl) protocol).disconnectNow();
+            } else {
+                 connections.disconnect(connectionId);
+            }
             chan.close();
         } catch (IOException ex) {
             ex.printStackTrace();
@@ -118,6 +139,10 @@ public class NonBlockingConnectionHandler<T> implements ConnectionHandler<T> {
 
     @Override
     public void send(T msg) {
-        //IMPLEMENT IF NEEDED
+        // CRITICAL: This allows the server to broadcast messages to this client
+        if (msg != null) {
+            writeQueue.add(ByteBuffer.wrap(encdec.encode(msg)));
+            reactor.updateInterestedOps(chan, SelectionKey.OP_READ | SelectionKey.OP_WRITE);
+        }
     }
 }
