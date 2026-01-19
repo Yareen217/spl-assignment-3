@@ -87,16 +87,23 @@ public class Reactor<T> implements Server<T> {
     }
 
     /*package*/ void updateInterestedOps(SocketChannel chan, int ops) {
-        final SelectionKey key = chan.keyFor(selector);
-        if (Thread.currentThread() == selectorThread) {
-            key.interestOps(ops);
-        } else {
-            selectorTasks.add(() -> {
-                key.interestOps(ops);
-            });
-            selector.wakeup();
-        }
-    }
+                final SelectionKey key = chan.keyFor(selector);
+                if (Thread.currentThread() == selectorThread) {
+                    // Direct call
+                    if (key != null && key.isValid()) {
+                        key.interestOps(ops);
+                    }
+                } else {
+                    // Scheduled task
+                    selectorTasks.add(() -> {
+                        // CRITICAL FIX: Check if key is valid before accessing it
+                        if (key != null && key.isValid()) {
+                            key.interestOps(ops);
+                        }
+                    });
+                    selector.wakeup();
+                }
+            }
 
 
     private void handleAccept(ServerSocketChannel serverChan, Selector selector) throws IOException {
