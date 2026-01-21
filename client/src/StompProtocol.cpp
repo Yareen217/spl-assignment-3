@@ -3,16 +3,16 @@
 #include <sstream>
 #include <algorithm>
 
-//helper method
+// command line
 static std::string getCommand(const std::string& frame) {
-    size_t newLineIndx = frame.find('\n');
-    std::string cmd = (newLineIndx != std::string::npos) ? frame.substr(0, newLineIndx) : frame;
+    size_t pos = frame.find('\n');
+    std::string cmd = (pos != std::string::npos) ? frame.substr(0,pos) : frame;
     if(!cmd.empty() && cmd.back() == '\r') {
         cmd.pop_back();
     }
     return cmd;
 }
-//helper method
+//helper method: remove spaces/\r
 static void trim (std::string& str) {
     while(!str.empty() && (str.back() == ' ' || str.back() == '\t' || str.back() == '\r')) {
         str.pop_back();
@@ -26,11 +26,11 @@ static void trim (std::string& str) {
     }
 }
 //helper method
-    static void appendUpdates(std::string& out, const std::string& title, 
+    static void addStats(std::string& out, const std::string& title, 
                             const std::map<std::string, std::string>& updates) {
         out += title + ":\n";
         for (const auto& p : updates) {
-            out += "   " + p.first + ": " + p.second + "\n";
+            out += "    " + p.first + ": " + p.second + "\n";
         }
     }
 
@@ -42,7 +42,7 @@ StompProtocol::StompProtocol(ConnectionHandler& CH) : connectionHandler(CH),
 StompProtocol::~StompProtocol() {
     stop();
 }
-// =============================== lifecycle ===============================
+// ----- lifecycle ------
 
 bool StompProtocol::isRunning() const {
     return running.load();
@@ -60,7 +60,7 @@ void StompProtocol::stop() {
     if(socketThread.joinable()) socketThread.join();
 }
 
-// =============================== socket thread ===============================
+// ----- socket thread -----
 
 void StompProtocol::processSocket() {
     while (running) {
@@ -88,6 +88,7 @@ void StompProtocol::handleServerFrame(const std::string& frame) {
         return;
     }
     else if(cmd == "ERROR"){
+        if(!loggedIn.load()){
         std::string msg = "ERROR";
         if(frame.find("wrong password") != std::string::npos || frame.find("Wrong password") != std::string::npos)
             msg = "Wrong password";
@@ -100,11 +101,19 @@ void StompProtocol::handleServerFrame(const std::string& frame) {
             loginMessage = msg;
             gotLoginResponse = true;
     }
-        cVariable.notify_all();
+        cVariable.notify_all();      
         running = false;
         connectionHandler.close();
         return;
 }
+        std::cout << frame << std::endl;
+        running = false;
+        connectionHandler.close();
+        cVariable.notify_all(); 
+        return;
+
+}
+
     if(cmd == "RECEIPT"){
     std::string receiptIdtxt = getheaderValue(frame, "receipt-id");
     if(!receiptIdtxt.empty()){
@@ -113,7 +122,7 @@ void StompProtocol::handleServerFrame(const std::string& frame) {
             std::lock_guard<std::mutex> lock(mutex);
             receiptDone.insert(recId);
         }
-        cVariable.notify_one();
+        cVariable.notify_all();     // wake thread waiting in waitForReceipt()
     }   
     return;
 }
@@ -123,7 +132,7 @@ void StompProtocol::handleServerFrame(const std::string& frame) {
     }
  }
 
- // =============================== keyboard input processing ===============================
+ // ------ keyboard input processing -----
 
 void StompProtocol::processkeyboardInput(const std::string& line) {
     std::istringstream iss(line);
@@ -170,7 +179,7 @@ void StompProtocol::processkeyboardInput(const std::string& line) {
  }
 }
 
-// =============================== command handlers ===============================
+// ------ command handlers ------
 
 void StompProtocol::handleLogin(const std::string& hostPort,
                                 const std::string& username,
@@ -187,6 +196,7 @@ void StompProtocol::handleLogin(const std::string& hostPort,
     }
 
     {
+        //wait until socket thread receives connected or error 
         std::lock_guard<std::mutex> lk(mutex);
         gotLoginResponse = false;
         loginMessage = "Login failed";
@@ -211,9 +221,7 @@ void StompProtocol::handleLogin(const std::string& hostPort,
         return gotLoginResponse || !running.load();
     });
 
-    if (!running.load()) return;
-
-    std::cout << loginMessage << std::endl;
+   if(gotLoginResponse) std::cout << loginMessage << std::endl;
 
     if (loginMessage == "Login successful") {
         loggedIn.store(true);
@@ -251,6 +259,9 @@ void StompProtocol::handleLogin(const std::string& hostPort,
             std::cout << "Disconnected. Exiting...\n";
             running = false;
             connectionHandler.close();
+            //remove from map 
+            std::lock_guard<std::mutex> lock(mutex);
+            channelToSubId.erase(channel);
             return;
         }
         waitForReceipt(recId);
@@ -322,11 +333,11 @@ void StompProtocol::handleLogin(const std::string& hostPort,
             body += "team a: " + event.get_team_a_name() + "\n";
             body += "team b: " + event.get_team_b_name() + "\n";
             body += "event name: " + event.get_name() + "\n";
-            body += "time:" + std::to_string(event.get_time()) + "\n";
+            body += "time: " + std::to_string(event.get_time()) + "\n";
 
-            appendUpdates(body, "general game updates", event.get_game_updates());
-            appendUpdates(body, "team a updates", event.get_team_a_updates());
-            appendUpdates(body, "team b updates", event.get_team_b_updates());
+            addStats(body, "general game updates", event.get_game_updates());
+            addStats(body, "team a updates", event.get_team_a_updates());
+            addStats(body, "team b updates", event.get_team_b_updates());
 
             body += "description:\n";
             body += event.get_discription() + "\n";
@@ -334,7 +345,6 @@ void StompProtocol::handleLogin(const std::string& hostPort,
 
             std::string frame = "SEND\n"
             "destination:/" + gameName + "\n"
-            "file-name:" + filepath + "\n"
             "\n" +
             body;
 
@@ -356,6 +366,7 @@ void StompProtocol::handleLogin(const std::string& hostPort,
         }
      UserGameInfo copy;
      {
+        //lock while copying to avoid blocking socket thread for long time
         std::lock_guard<std::mutex> lock(mutex);
         auto it = game_updates.find(gameName);
         if(it == game_updates.end()) {
@@ -370,6 +381,7 @@ void StompProtocol::handleLogin(const std::string& hostPort,
         copy = userIt->second;
     }
         std::vector<storedEvent> eventsCopy = copy.events;
+        // sorting by half before time because timestamps can go backwardsafter halftime
         std::sort(eventsCopy.begin(), eventsCopy.end(),
                   [](const storedEvent& a, const storedEvent& b) {
                       if(a.secondHalf != b.secondHalf) {
@@ -385,7 +397,8 @@ void StompProtocol::handleLogin(const std::string& hostPort,
         out << copy.teamA << " vs " << copy.teamB << "\n";
         out << "Game stats:\n";
         out << "General stats:\n";
-
+          
+        //stats are printed lexicograpghically
         for(const auto& p : copy.generalUpdates) {
             out << p.first << ": " << p.second << "\n";
         }
@@ -402,7 +415,6 @@ void StompProtocol::handleLogin(const std::string& hostPort,
         for(const auto& event : eventsCopy) {
             out << event.time << " - " << event.name << ":\n";
             out << event.description << "\n";
-            out << "\n";
         }
     }
 
@@ -436,7 +448,7 @@ void StompProtocol::handleLogin(const std::string& hostPort,
     std::cout << "Logged out" << std::endl;
 }
 
-// =============================== message parsing ===============================
+// ----- message parsing -----
 
     void StompProtocol::handleMessage(const std::string& frame) {
         std ::string dest = getheaderValue(frame, "destination");
@@ -474,6 +486,7 @@ void StompProtocol::handleLogin(const std::string& hostPort,
         for(const auto& p : event.get_team_b_updates()) {
             info.teamBUpdates[p.first] = p.second;
         }
+        // half time handling
         bool isBeforeHalf = info.beforeHalftime;
        auto it = event.get_game_updates().find("before halftime");
        if(it != event.get_game_updates().end()) {
@@ -497,7 +510,7 @@ void StompProtocol::handleLogin(const std::string& hostPort,
     std::string StompProtocol::getBody(const std::string& frame) {
         size_t pos = frame.find("\n\n");
         if (pos != std::string::npos) {
-            return frame.substr(pos + 2); // +2 to skip the two newlines
+            return frame.substr(pos + 2); // to skip the two newlines
         }
         return "";
     }
@@ -583,7 +596,7 @@ void StompProtocol::handleLogin(const std::string& hostPort,
         return true;
               }
 
-            // =============================== helper methods ===============================
+            // ------ helper methods ------
     
     std::string StompProtocol::getheaderValue(const std::string& frame, const std::string& header) {
        std::istringstream in(frame);
