@@ -173,37 +173,55 @@ void StompProtocol::processkeyboardInput(const std::string& line) {
 // =============================== command handlers ===============================
 
 void StompProtocol::handleLogin(const std::string& hostPort,
-     const std::string& username, const std::string& pass) {
+                                const std::string& username,
+                                const std::string& pass) {
+    (void)hostPort; // Option A: ignore hostPort, main already connected
+
     if (loggedIn.load()) {
-        std::cout << "The client is already logged in, log out before trying again" << std::endl;
+        std::cout << "The client is already logged in, log out before trying again\n";
         return;
     }
-    std::unique_lock<std::mutex> lk(mutex);
-    gotLoginResponse = false;
-    loginMessage = "Login failed";
-    lk.unlock();
-
-    std::string frame = "CONNECT\n"
-    "accept-version:1.2\n"
-    "host:stomp.cs.bgu.ac.il\n" 
-    "login:" + username + "\n"
-    "passcode:" + pass + "\n"
-    "\n";
-
-        bool sent = connectionHandler.sendFrameAscii(frame, '\0');
-        if(!sent){
-            std::cout << "Disconneted" << std::endl;
-            return;
-        }
-        lk.lock();
-        cVariable.wait(lk, [this]{ return gotLoginResponse || !running; });
-        if(!running) return; 
-        std::cout << loginMessage << std::endl;
-        if (loginMessage == "Login successful") {
-            loggedIn.store(true);
-            currentUser = username;
-        }
+    if (!running.load()) {
+        std::cout << "Internal error: start() was not called before login\n";
+        return;
     }
+
+    {
+        std::lock_guard<std::mutex> lk(mutex);
+        gotLoginResponse = false;
+        loginMessage = "Login failed";
+    }
+
+    std::string frame =
+        "CONNECT\n"
+        "accept-version:1.2\n"
+        "host:stomp.cs.bgu.ac.il\n"
+        "login:" + username + "\n"
+        "passcode:" + pass + "\n"
+        "\n";
+
+    if (!connectionHandler.sendFrameAscii(frame, '\0')) {
+        std::cout << "Disconnected\n";
+        stop();                 // stop thread + close socket
+        return;
+    }
+
+    std::unique_lock<std::mutex> lk(mutex);
+    cVariable.wait(lk, [this]{
+        return gotLoginResponse || !running.load();
+    });
+
+    if (!running.load()) return;
+
+    std::cout << loginMessage << std::endl;
+
+    if (loginMessage == "Login successful") {
+        loggedIn.store(true);
+        currentUser = username;
+    }
+}
+
+
      
     void StompProtocol::handleJoin(const std::string& channel) {
         if (!loggedIn.load()) {
@@ -393,35 +411,31 @@ void StompProtocol::handleLogin(const std::string& hostPort,
         std::cout << "User not logged in" << std::endl;
         return;
     }
-    int recId;
-    {
-        std::lock_guard<std::mutex> lock(mutex);
-        recId = receiptId++;   
-    }
-    std::string frame = "DISCONNECT\n"
-    "receipt:" + std::to_string(recId) + "\n"
-    "\n";
-    
-    bool sent = connectionHandler.sendFrameAscii(frame, '\0');
-    // If sending fails, we should still clean up locally!
-    
-    if (sent) {
-        waitForReceipt(recId);
-    }
 
-    // --- CLEANUP SECTION (Always run this!) ---
-    running = false;
-    connectionHandler.close();
+    int recId;
+    { std::lock_guard<std::mutex> lock(mutex); recId = receiptId++; }
+
+    std::string frame = "DISCONNECT\nreceipt:" + std::to_string(recId) + "\n\n";
+    bool sent = connectionHandler.sendFrameAscii(frame, '\0');
+
+    if (sent) waitForReceipt(recId);
+
+    // Always clean local session state
+    loggedIn.store(false);
+    currentUser.clear();
     {
         std::lock_guard<std::mutex> lock(mutex);
         channelToSubId.clear();
         receiptDone.clear();
+        game_updates.clear(); // optional, depends on spec for summary persistence
     }
-    loggedIn.store(false);
-    currentUser.clear();
-    
+
+    // Stop socket thread + close connection
+    stop();
+
     std::cout << "Logged out" << std::endl;
 }
+
 // =============================== message parsing ===============================
 
     void StompProtocol::handleMessage(const std::string& frame) {
