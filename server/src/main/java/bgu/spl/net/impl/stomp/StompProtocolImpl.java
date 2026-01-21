@@ -31,7 +31,6 @@ public class StompProtocolImpl implements StompMessagingProtocol<String> {
         this.connections = connections;
     }
     
-    // ... (process() remains exactly the same) ...
     @Override
     public String process(String message) {
         if (message == null || message.isEmpty()) return null;
@@ -115,17 +114,12 @@ public class StompProtocolImpl implements StompMessagingProtocol<String> {
 
         String messageBody = frame.body;
 
-        // --- IMPROVED: Parse Body AND Headers for Reports ---
-        
-        // 1. Try to find "file: <name>" in the message BODY (Standard way)
         String filename = getValueFromBody(messageBody, "file");
         
-        // 2. Fallback: If not in body, check the HEADERS (Test script way)
         if (filename == null) {
-            filename = frame.headers.get("file");
+            filename = frame.headers.get("file-name");
         }
         
-        // If we found it in either place, save the report!
         if (filename != null) {
             String timestamp = Long.toString(System.currentTimeMillis());
             
@@ -139,8 +133,6 @@ public class StompProtocolImpl implements StompMessagingProtocol<String> {
                 System.out.println("Report logged: User=" + this.username + ", File=" + filename);
             }
         }
-        // ------------------------------
-
         int msgId = messageIdCounter.incrementAndGet();
         
         for (Map.Entry<Integer, Integer> subscriber : connImpl.getChannelSubscribers(destination).entrySet()) {
@@ -197,10 +189,30 @@ public class StompProtocolImpl implements StompMessagingProtocol<String> {
     }
 
     private void sendError(StompFrame f, String msg) {
-        String r = f.headers.get("receipt");
-        String out = "ERROR\n" + (r!=null ? "receipt-id:"+r+"\n":"") + "message:"+msg+"\n\n\u0000";
-        connections.send(connectionId, out);
+    String r = f.headers.get("receipt");
+    // 1. Build Headers
+    StringBuilder sb = new StringBuilder();
+    sb.append("ERROR\n");
+    if (r != null) sb.append("receipt-id:").append(r).append("\n");
+    sb.append("message:").append(msg).append("\n");
+    sb.append("\n"); // End of headers
+    
+    // 2. Build Body (The "Fancy" part)
+    sb.append("The message:\n");
+    sb.append("-----\n");
+    sb.append(f.command).append("\n"); // The command that failed
+    // Reconstruct the headers provided by the user
+    for (String key : f.headers.keySet()) {
+        sb.append(key).append(":").append(f.headers.get(key)).append("\n");
     }
+    sb.append("\n"); // Spacer
+    if (!f.body.isEmpty()) sb.append(f.body).append("\n"); // The body they sent
+    sb.append("-----\n");
+
+    sb.append("\u0000"); // Null terminator
+
+    connections.send(connectionId, sb.toString());
+}
 
     // ... Inner StompFrame class ...
     private static class StompFrame {
