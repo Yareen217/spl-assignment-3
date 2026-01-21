@@ -299,7 +299,6 @@ void StompProtocol::handleLogin(const std::string& hostPort,
             }
         }
         for(const Event& event : parsed.events) {
-            storeForSummary(gameName, currentUser, event);
             std::string body;
             body += "user: " + currentUser + "\n";
             body += "team a: " + event.get_team_a_name() + "\n";
@@ -317,6 +316,7 @@ void StompProtocol::handleLogin(const std::string& hostPort,
 
             std::string frame = "SEND\n"
             "destination:/" + gameName + "\n"
+            "file-name:" + filepath + "\n"
             "\n" +
             body;
 
@@ -389,41 +389,39 @@ void StompProtocol::handleLogin(const std::string& hostPort,
     }
 
     void StompProtocol::handleLogout() {
-        if(!loggedIn.load()) {
-            std::cout << "User not logged in" << std::endl;
-            return;
-        }
-        int recId;
-       {
+    if(!loggedIn.load()) {
+        std::cout << "User not logged in" << std::endl;
+        return;
+    }
+    int recId;
+    {
         std::lock_guard<std::mutex> lock(mutex);
-            recId = receiptId++;   
+        recId = receiptId++;   
     }
-        std::string frame = "DISCONNECT\n"
-        "receipt:" + std::to_string(recId) + "\n"
-        "\n";
-        bool sent = connectionHandler.sendFrameAscii(frame, '\0');
-        if (!sent) {
-            std::cout << "Disconnected" << std::endl;
-            running = false;
-            connectionHandler.close();
-            return;
-        }
+    std::string frame = "DISCONNECT\n"
+    "receipt:" + std::to_string(recId) + "\n"
+    "\n";
+    
+    bool sent = connectionHandler.sendFrameAscii(frame, '\0');
+    // If sending fails, we should still clean up locally!
+    
+    if (sent) {
         waitForReceipt(recId);
-        if(!running) return; 
-
-        running = false;
-        connectionHandler.close();
-        {
-            std::lock_guard<std::mutex> lock(mutex);
-            channelToSubId.clear();
-            receiptDone.clear();
-        }
-        loggedIn.store(false);
-        currentUser.clear();
-        
-        std::cout << "Logged out " << std::endl;
     }
 
+    // --- CLEANUP SECTION (Always run this!) ---
+    running = false;
+    connectionHandler.close();
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        channelToSubId.clear();
+        receiptDone.clear();
+    }
+    loggedIn.store(false);
+    currentUser.clear();
+    
+    std::cout << "Logged out" << std::endl;
+}
 // =============================== message parsing ===============================
 
     void StompProtocol::handleMessage(const std::string& frame) {
@@ -472,6 +470,7 @@ void StompProtocol::handleLogin(const std::string& hostPort,
                 isBeforeHalf = false;
             }
         }
+        info.beforeHalftime = isBeforeHalf;
             storedEvent ev;
             ev.time = event.get_time();
             ev.secondHalf = !isBeforeHalf;
