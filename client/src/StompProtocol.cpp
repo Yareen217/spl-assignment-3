@@ -347,6 +347,7 @@ void StompProtocol::handleLogin(const std::string& hostPort,
 
             std::string frame = "SEND\n"
             "destination:/" + gameName + "\n"
+            "file-name:" + filepath + "\n"  
             "\n" +
             body;
 
@@ -466,6 +467,10 @@ void StompProtocol::handleLogin(const std::string& hostPort,
             std::cout << "Could not parse message body" << std::endl;
             return;
         }
+        std::cout << "Received update for game: " << gameName << std::endl;
+        std::cout << "  Event: " << event.get_name() << std::endl;
+        std::cout << "  Time: " << event.get_time() << std::endl;
+        std::cout << "  Description: " << event.get_discription() << std::endl;
         storeForSummary(gameName, reporter, event);
     }
 
