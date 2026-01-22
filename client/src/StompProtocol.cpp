@@ -76,6 +76,7 @@ void StompProtocol::processSocket() {
     }
 }
 
+
 void StompProtocol::handleServerFrame(const std::string& frame) {
     std::string cmd = getCommand(frame);
     if(cmd == "CONNECTED"){
@@ -106,7 +107,7 @@ void StompProtocol::handleServerFrame(const std::string& frame) {
         connectionHandler.close();
         return;
 }
-        std::cout << frame << std::endl;
+        
         running = false;
         connectionHandler.close();
         cVariable.notify_all(); 
@@ -116,8 +117,9 @@ void StompProtocol::handleServerFrame(const std::string& frame) {
 
     if(cmd == "RECEIPT"){
     std::string receiptIdtxt = getheaderValue(frame, "receipt-id");
-    if(!receiptIdtxt.empty()){
-        int recId = std::stoi(receiptIdtxt);
+    trim(receiptIdtxt);
+    if(!receiptIdtxt.empty()) {
+    int recId = std::stoi(receiptIdtxt);
         {
             std::lock_guard<std::mutex> lock(mutex);
             receiptDone.insert(recId);
